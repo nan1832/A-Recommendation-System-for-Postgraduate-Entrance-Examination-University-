@@ -1,16 +1,25 @@
 "use client";
 
 import {
+  Activity,
   BarChart3,
-  CheckCircle2,
+  Building2,
+  ChevronRight,
   Database,
   ExternalLink,
   GraduationCap,
+  Layers3,
+  MapPinned,
+  Maximize2,
   RefreshCw,
   Search,
+  Settings2,
   ShieldCheck,
+  Sparkles,
+  X,
+  type LucideIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Bar,
   BarChart,
@@ -21,6 +30,7 @@ import {
   YAxis,
 } from "recharts";
 import type { AdmissionUnit } from "@/lib/types";
+import { ChinaMap, normalizeRegion } from "./china-map";
 import { SubjectExplorer } from "./subject-explorer";
 
 type CatalogResponse = {
@@ -35,6 +45,8 @@ type CatalogResponse = {
   catalogCount: number;
   regions: string[];
   regionDistribution: Array<{ region: string; count: number }>;
+  offerings408Count: number;
+  offerings408SchoolCount: number;
   stats: {
     graduateSchool: number;
     selfMarking: number;
@@ -43,49 +55,73 @@ type CatalogResponse = {
   };
 };
 
+const NAV_ITEMS: Array<{ label: string; icon: LucideIcon }> = [
+  { label: "考研概况", icon: Activity },
+  { label: "院校地图", icon: MapPinned },
+  { label: "院校库", icon: Building2 },
+  { label: "专业分析", icon: BarChart3 },
+  { label: "数据核验", icon: ShieldCheck },
+];
+
 export function Dashboard() {
-  const [keyword, setKeyword] = useState("");
-  const [region, setRegion] = useState("全部");
-  const [attribute, setAttribute] = useState("全部");
-  const [page, setPage] = useState(1);
   const [data, setData] = useState<CatalogResponse | null>(null);
+  const [provinceUnits, setProvinceUnits] = useState<AdmissionUnit[]>([]);
+  const [selectedProvince, setSelectedProvince] = useState("江苏");
+  const [panelOpen, setPanelOpen] = useState(true);
   const [loading, setLoading] = useState(true);
+  const [provinceLoading, setProvinceLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
   const [syncNotice, setSyncNotice] = useState("");
-  const [selectedUnit, setSelectedUnit] = useState<AdmissionUnit | null>(null);
+  const [now, setNow] = useState<Date | null>(null);
+  const [keyword, setKeyword] = useState("");
+  const [showAllUnits, setShowAllUnits] = useState(false);
+  const [historyUnit, setHistoryUnit] = useState<AdmissionUnit | null>(null);
+  const [subjectExplorerOpen, setSubjectExplorerOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    setNow(new Date());
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      setError("");
-      const params = new URLSearchParams({
-        keyword,
-        region,
-        attribute,
-        page: String(page),
-        pageSize: "20",
-      });
-      try {
-        const response = await fetch(`/api/schools?${params}`, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!response.ok) throw new Error("院校数据加载失败");
-        setData((await response.json()) as CatalogResponse);
-      } catch (requestError) {
-        if ((requestError as Error).name !== "AbortError")
-          setError((requestError as Error).message);
-      } finally {
-        setLoading(false);
-      }
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [attribute, keyword, page, region]);
+    setLoading(true);
+    fetch("/api/schools?page=1&pageSize=100", { cache: "no-store", signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("招生单位数据加载失败");
+        return response.json() as Promise<CatalogResponse>;
+      })
+      .then((nextData) => setData(nextData))
+      .catch((requestError) => {
+        if ((requestError as Error).name !== "AbortError") setError((requestError as Error).message);
+      })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setProvinceLoading(true);
+    const params = new URLSearchParams({ region: selectedProvince, page: "1", pageSize: "100" });
+    fetch(`/api/schools?${params}`, { cache: "no-store", signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error("省份院校数据加载失败");
+        return response.json() as Promise<CatalogResponse>;
+      })
+      .then((nextData) => setProvinceUnits(nextData.items))
+      .catch((requestError) => {
+        if ((requestError as Error).name !== "AbortError") setError((requestError as Error).message);
+      })
+      .finally(() => setProvinceLoading(false));
+    return () => controller.abort();
+  }, [selectedProvince]);
+
+  useEffect(() => {
+    setShowAllUnits(false);
+    setHistoryUnit(null);
+  }, [selectedProvince]);
 
   async function syncNow() {
     setSyncing(true);
@@ -96,11 +132,9 @@ export function Dashboard() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "同步失败");
       setSyncNotice(result.message ?? "数据同步完成");
-      setPage(1);
-      const refreshed = await fetch("/api/schools?page=1&pageSize=20", {
-        cache: "no-store",
-      });
-      setData(await refreshed.json());
+      const refreshed = await fetch("/api/schools?page=1&pageSize=100", { cache: "no-store" });
+      if (!refreshed.ok) throw new Error("同步后数据刷新失败");
+      setData((await refreshed.json()) as CatalogResponse);
     } catch (syncError) {
       setError((syncError as Error).message);
     } finally {
@@ -108,429 +142,148 @@ export function Dashboard() {
     }
   }
 
+  const selectedCount = data?.regionDistribution.find(
+    (item) => normalizeRegion(item.region) === normalizeRegion(selectedProvince),
+  )?.count ?? 0;
+  const topRegions = data?.regionDistribution.slice(0, 10) ?? [];
+  const publishedRate = data?.catalogCount
+    ? Math.round((data.stats.publishedMetrics / data.catalogCount) * 100)
+    : 0;
+  const selectedKnownCount = provinceUnits.filter((unit) => unit.dataStatus === "official-detail").length;
+  const selectedKnownRate = selectedCount ? Math.round((selectedKnownCount / selectedCount) * 100) : 0;
+  const filteredProvinceUnits = useMemo(
+    () => provinceUnits.filter((unit) => !keyword || `${unit.name} ${unit.department}`.includes(keyword)),
+    [keyword, provinceUnits],
+  );
+  const visibleProvinceUnits = showAllUnits ? filteredProvinceUnits : filteredProvinceUnits.slice(0, 6);
+
+  function handleNav(label: string) {
+    if (label === "专业分析") {
+      setSubjectExplorerOpen(true);
+      return;
+    }
+    const target = label === "院校地图" ? "map" : label === "院校库" ? "drawer" : label === "数据核验" ? "bottom" : "header";
+    document.querySelector(`[data-layout-region="${target}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (label === "院校库") setPanelOpen(true);
+  }
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      // Fullscreen can be blocked by an embedded browser; the dashboard remains usable.
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-[#f5f9ff] text-slate-950">
-      <header className="border-b border-blue-100 bg-white">
-        <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex size-12 items-center justify-center rounded-xl bg-blue-600 text-white">
-              <GraduationCap />
-            </div>
-            <div>
-              <h1 className="text-2xl font-black">
-                全国考研招生单位实时数据平台
-              </h1>
-              <p className="text-sm text-slate-500">
-                只展示可核验官方数据，未公开字段不会估算
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={syncNow}
-            disabled={syncing}
-            className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-bold text-white disabled:opacity-60"
-          >
-            <RefreshCw className={syncing ? "animate-spin" : ""} />
-            {syncing ? "正在同步研招网..." : "立即同步最新数据"}
-          </button>
+    <main className="dashboard-shell">
+      <header className="dashboard-header" data-layout-region="header">
+        <div className="brand-lockup">
+          <div className="brand-mark"><GraduationCap size={26} /></div>
+          <div><div className="brand-title">研考数据可视化平台</div><div className="brand-subtitle">全国招生单位 · 官方快照 · 实时核验</div></div>
+        </div>
+        <div className="header-title"><span>GRADUATE ADMISSIONS DATA CENTER</span><h1>全国考研招生单位实时数据中心</h1><i /></div>
+        <div className="header-actions">
+          <div className="header-clock"><span>{now ? now.toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" }) : "----/--/--"}</span><strong>{now ? now.toLocaleTimeString("zh-CN", { hour12: false }) : "--:--:--"}</strong></div>
+          <button type="button" className="icon-button" aria-label="全屏展示" onClick={toggleFullscreen}><Maximize2 size={16} /></button>
+          <button type="button" className="sync-button" onClick={syncNow} disabled={syncing}><RefreshCw size={15} className={syncing ? "spin" : ""} />{syncing ? "同步中" : "同步数据"}</button>
         </div>
       </header>
 
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-5 px-5 py-6">
-        {error && (
-          <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
-            {error}
-          </div>
-        )}
-        {syncNotice && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
-            {syncNotice}
-          </div>
-        )}
-        <section className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-          <Stat
-            label="招生单位总数"
-            value={String(data?.catalogCount ?? "-")}
-            icon={Database}
-          />
-          <Stat
-            label="研究生院"
-            value={String(data?.stats.graduateSchool ?? "-")}
-            icon={GraduationCap}
-          />
-          <Stat
-            label="自划线单位"
-            value={String(data?.stats.selfMarking ?? "-")}
-            icon={ShieldCheck}
-          />
-          <Stat
-            label="双一流标记"
-            value={String(data?.stats.doubleFirstClass ?? "-")}
-            icon={CheckCircle2}
-          />
-          <Stat
-            label="已解析详细指标"
-            value={String(data?.stats.publishedMetrics ?? 0)}
-            icon={BarChart3}
-          />
+      <aside className="nav-rail" data-layout-region="nav">
+        <div className="nav-rail__caption">DATA<br />CENTER</div>
+        <nav>{NAV_ITEMS.map(({ label, icon: Icon }, index) => <button key={label} type="button" className={`nav-item${index === 0 || (label === "专业分析" && subjectExplorerOpen) ? " is-active" : ""}`} onClick={() => handleNav(label)}><Icon size={18} /><span>{label}</span></button>)}</nav>
+        <div className="nav-rail__footer"><Sparkles size={16} /> 数据赋能研招</div>
+      </aside>
+
+      <div className="dashboard-main">
+        {error && <div className="dashboard-alert is-error">{error}</div>}
+        {syncNotice && <div className="dashboard-alert is-success">{syncNotice}</div>}
+
+        <section className="kpi-grid" data-layout-region="kpi">
+          <KpiCard icon={Database} label="招生单位总数" value={data ? `${data.catalogCount}` : "--"} suffix="所" note="研招网官方院校库" />
+          <KpiCard icon={MapPinned} label="覆盖省份" value={data ? `${data.regions.length}` : "--"} suffix="个" note="点击地图查看省份" />
+          <KpiCard icon={Layers3} label="408 专业记录" value={data ? `${data.offerings408Count}` : "--"} suffix="条" note={`${data?.offerings408SchoolCount ?? "--"} 个招生单位`} />
+          <KpiCard icon={ShieldCheck} label="已解析详细指标" value={data ? `${data.stats.publishedMetrics}` : "--"} suffix="所" note={`当前公开率 ${publishedRate}%`} />
         </section>
 
-        <SubjectExplorer regions={data?.regions ?? []} />
+        <section className="workspace-grid" data-layout-region="workspace">
+          <section className="panel map-panel" data-layout-region="map">
+            <div className="panel-heading"><div><div className="eyebrow"><span className="status-dot" /> 全国招生单位地区分布</div><h2>招生单位地区分布</h2><p>波点大小表示招生单位数量，点击省份查看院校明细</p></div><div className="map-heading-meta"><span>数据更新时间</span><strong>{data ? formatDate(data.syncedAt) : "--"}</strong></div></div>
+            <ChinaMap regionDistribution={data?.regionDistribution ?? []} selectedProvince={selectedProvince} onSelectProvince={(province) => { setSelectedProvince(province); setPanelOpen(true); }} />
+          </section>
 
-        <section className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <h2 className="text-xl font-black">全国招生单位目录</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                数据源：{data?.source ?? "研招网"} · 最后同步：
-                {data ? new Date(data.syncedAt).toLocaleString("zh-CN") : "-"}
-              </p>
+          {panelOpen ? <aside className="panel school-drawer" data-layout-region="drawer">
+            <div className="drawer-heading"><div><div className="eyebrow"><span className="status-dot status-dot--amber" /> 省份院校明细</div><h2>{selectedProvince}<em> · 招生单位 {selectedCount} 所</em></h2></div><button type="button" className="drawer-close" onClick={() => setPanelOpen(false)} aria-label="关闭院校浮层"><X size={18} /></button></div>
+            <div className="drawer-summary"><SummaryStat label="研究生院" value={provinceUnits.filter((unit) => unit.graduateSchool).length} /><SummaryStat label="自划线" value={provinceUnits.filter((unit) => unit.selfMarking).length} /><SummaryStat label="双一流" value={provinceUnits.filter((unit) => unit.doubleFirstClass).length} /><SummaryStat label="指标公开率" value={`${selectedKnownRate}%`} /></div>
+            <div className="drawer-tools"><label className="drawer-search"><Search size={14} /><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="筛选院校" /></label><span>{provinceLoading ? "正在载入" : `显示 ${filteredProvinceUnits.length} 所`}</span></div>
+            <div className="school-table" role="table" aria-label={`${selectedProvince}招生单位列表`}>
+              <div className="school-table__head" role="row"><span>院校</span><span>地区 / 主管部门</span><span>2026 招生人数</span><span>复试线</span><span>复录比</span><span>近年数据</span></div>
+              {provinceLoading ? <div className="drawer-empty">省份院校数据载入中…</div> : visibleProvinceUnits.length ? visibleProvinceUnits.map((unit) => <SchoolRow key={unit.id} unit={unit} onHistory={() => setHistoryUnit(unit)} />) : <div className="drawer-empty">没有匹配的院校</div>}
             </div>
-            <div className="grid gap-3 md:grid-cols-3">
-              <label className="flex items-center gap-2 rounded-xl border border-blue-100 px-3">
-                <Search className="text-blue-600" />
-                <input
-                  value={keyword}
-                  onChange={(event) => {
-                    setKeyword(event.target.value);
-                    setPage(1);
-                  }}
-                  placeholder="搜索招生单位"
-                  className="min-w-0 flex-1 py-3 text-sm outline-none"
-                />
-              </label>
-              <select
-                value={region}
-                onChange={(event) => {
-                  setRegion(event.target.value);
-                  setPage(1);
-                }}
-                className="rounded-xl border border-blue-100 bg-white px-3 py-3 text-sm font-bold"
-              >
-                <option>全部</option>
-                {data?.regions.map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
-              <select
-                value={attribute}
-                onChange={(event) => {
-                  setAttribute(event.target.value);
-                  setPage(1);
-                }}
-                className="rounded-xl border border-blue-100 bg-white px-3 py-3 text-sm font-bold"
-              >
-                {["全部", "研究生院", "自划线", "双一流"].map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <p className="mt-4 text-sm font-bold text-blue-700">
-            当前筛选共 {data?.total ?? 0} 个招生单位
-          </p>
-          <div className="mt-4 overflow-x-auto rounded-xl border border-blue-100">
-            <table className="w-full min-w-[960px] text-left text-sm">
-              <thead className="bg-blue-50 text-xs font-black text-blue-900">
-                <tr>
-                  {[
-                    "招生单位",
-                    "地区",
-                    "主管部门",
-                    "属性",
-                    "2026 招生人数",
-                    "2026 复试线",
-                    "2026 复录比",
-                    "近年数据",
-                    "官方来源",
-                  ].map((head) => (
-                    <th key={head} className="px-4 py-3">
-                      {head}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data?.items.map((unit) => {
-                  const current = unit.history.find(
-                    (item) => item.year === 2026,
-                  );
-                  return (
-                    <tr key={unit.id} className="border-t border-blue-50">
-                      <td className="px-4 py-3 font-black">{unit.name}</td>
-                      <td className="px-4 py-3">{unit.region}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {unit.department}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-1">
-                          {unit.graduateSchool && <Tag>研究生院</Tag>}
-                          {unit.selfMarking && <Tag>自划线</Tag>}
-                          {unit.doubleFirstClass && <Tag>双一流</Tag>}
-                        </div>
-                      </td>
-                      <MissingCell
-                        value={current?.enrollment ?? null}
-                        label={current?.note}
-                      />
-                      <MissingCell
-                        value={current?.retestLine ?? null}
-                        label={current?.note}
-                      />
-                      <RatioCell
-                        value={current?.retestAdmissionRatio ?? null}
-                        label={current?.note}
-                      />
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => setSelectedUnit(unit)}
-                          className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-black text-white"
-                        >
-                          查看 2023-2026
-                        </button>
-                      </td>
-                      <td className="px-4 py-3">
-                        <a
-                          href={unit.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 font-bold text-blue-700"
-                        >
-                          研招网 <ExternalLink size={14} />
-                        </a>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {selectedUnit && (
-            <HistoryPanel
-              unit={selectedUnit}
-              onClose={() => setSelectedUnit(null)}
-            />
-          )}
-          <div className="mt-4 flex items-center justify-between">
-            <button
-              disabled={page <= 1}
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              className="rounded-xl border border-blue-100 px-4 py-2 text-sm font-bold disabled:opacity-40"
-            >
-              上一页
-            </button>
-            <span className="text-sm font-bold text-slate-500">
-              第 {data?.page ?? 1} / {data?.totalPages ?? 1} 页{" "}
-              {loading && "· 加载中"}
-            </span>
-            <button
-              disabled={page >= (data?.totalPages ?? 1)}
-              onClick={() => setPage((current) => current + 1)}
-              className="rounded-xl border border-blue-100 px-4 py-2 text-sm font-bold disabled:opacity-40"
-            >
-              下一页
-            </button>
-          </div>
+            <div className="drawer-footer"><div className="drawer-footer__links"><a href={data?.sourceUrl ?? "https://yz.chsi.com.cn/sch/"} target="_blank" rel="noreferrer">查看研招网官方目录 <ExternalLink size={14} /></a><button type="button" onClick={() => setShowAllUnits((value) => !value)}>{showAllUnits ? "收起列表" : `查看全部 ${filteredProvinceUnits.length} 所`} <ChevronRight size={14} /></button></div><span>数据缺失时显示“未公开”</span></div>
+            {historyUnit && <HistoryOverlay unit={historyUnit} onClose={() => setHistoryUnit(null)} />}
+          </aside> : <button type="button" className="drawer-reopen" onClick={() => setPanelOpen(true)}><ChevronRight size={18} /> 打开院校浮层</button>}
         </section>
 
-        <section className="grid gap-5 lg:grid-cols-[1fr_0.8fr]">
-          <div className="rounded-2xl border border-blue-100 bg-white p-5">
-            <h2 className="text-xl font-black">招生单位地区分布</h2>
-            <div className="mt-4 h-[360px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data?.regionDistribution.slice(0, 15)}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="region" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="count" fill="#2563eb" radius={[8, 8, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5">
-            <h2 className="text-xl font-black text-amber-900">
-              数据真实性说明
-            </h2>
-            <div className="mt-4 flex flex-col gap-3 text-sm leading-6 text-amber-950">
-              <p>
-                招生单位名称、地区、主管部门和属性来自研招网院校库快照，并可通过来源链接核验。
-              </p>
-              <p>
-                招生人数、报考人数、复试线等字段需要逐校解析招生简章或复试公告。没有可靠来源时统一显示“未公开”，不会用估算值伪装真实数据。
-              </p>
-              <p>
-                公网版本由 GitHub Actions
-                每 6 小时自动同步、校验并重新部署；本地版本可点击按钮强制抓取。云端不会写入只读文件系统。
-              </p>
-              <a
-                href={data?.sourceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex items-center gap-2 font-black text-blue-700"
-              >
-                打开研招网院校库 <ExternalLink size={16} />
-              </a>
-            </div>
-          </div>
+        <section className="bottom-grid" data-layout-region="bottom">
+          <section className="panel ranking-panel"><PanelTitle icon={BarChart3} title="各省份招生单位数量 TOP10" action="地区排行" /><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><BarChart data={topRegions} margin={{ top: 12, right: 14, left: -22, bottom: 0 }}><CartesianGrid stroke="#1c4568" strokeDasharray="3 4" vertical={false} /><XAxis dataKey="region" tick={{ fill: "#8ea9c4", fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fill: "#8ea9c4", fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip contentStyle={{ background: "#061a2b", border: "1px solid #1cc9e8", borderRadius: 8, color: "#e9fbff" }} formatter={(value) => [`${value} 所`, "招生单位"]} /><Bar dataKey="count" fill="#16c7ef" radius={[5, 5, 0, 0]} maxBarSize={28} /></BarChart></ResponsiveContainer></div></section>
+          <section className="panel coverage-panel"><PanelTitle icon={Settings2} title="数据核验与公开情况" action="官方口径" /><div className="coverage-layout"><div className="coverage-ring" style={{ "--coverage": `${publishedRate}%` } as React.CSSProperties}><strong>{publishedRate}%</strong><span>详细指标公开率</span></div><div className="coverage-list"><CoverageRow label="全国目录字段" value={data ? "100%" : "--"} progress={100} color="cyan" /><CoverageRow label={`${selectedProvince}详细指标`} value={data ? `${selectedKnownRate}%` : "--"} progress={selectedKnownRate} color="amber" /><CoverageRow label="408 专业关联院校" value={data ? `${data.offerings408SchoolCount} 所` : "--"} progress={data ? Math.min(100, Math.round((data.offerings408SchoolCount / Math.max(data.catalogCount, 1)) * 100)) : 0} color="violet" /><div className="coverage-note"><ShieldCheck size={15} /> 数据来源：中国研究生招生信息网院校库；未公开字段不做估算。</div></div></div></section>
         </section>
+        <footer className="dashboard-footer"><span>数据源：{data?.source ?? "中国研究生招生信息网院校库"}</span><span>快照时间：{data ? formatDate(data.syncedAt) : "--"}</span><span>研考数据可视化平台 · 数据透明 · 仅展示可核验字段</span></footer>
       </div>
+      {subjectExplorerOpen && <div className="subject-modal" role="dialog" aria-modal="true" aria-label="专业分析"><div className="subject-modal__body"><div className="subject-modal__header"><div><span className="eyebrow"><span className="status-dot" /> 专业分析</span><h2>按考试科目选学校和专业</h2></div><button type="button" className="drawer-close" onClick={() => setSubjectExplorerOpen(false)} aria-label="关闭专业分析"><X size={18} /></button></div><SubjectExplorer regions={data?.regions ?? []} /></div></div>}
     </main>
   );
 }
 
-function Stat({
-  label,
-  value,
-  icon: Icon,
-}: {
-  label: string;
-  value: string;
-  icon: typeof Database;
-}) {
-  return (
-    <div className="rounded-lg border border-blue-100 bg-white p-3 shadow-sm sm:p-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-bold text-slate-500">{label}</p>
-        <Icon className="text-blue-600" />
-      </div>
-      <p className="mt-2 text-2xl font-black sm:mt-3 sm:text-3xl">{value}</p>
-    </div>
-  );
-}
-function Tag({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">
-      {children}
-    </span>
-  );
-}
-function MissingCell({
-  value,
-  label = "未公开",
-}: {
-  value: number | null;
-  label?: string;
-}) {
-  return (
-    <td className="px-4 py-3">
-      {value ?? (
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-500">
-          {label}
-        </span>
-      )}
-    </td>
-  );
-}
-function RatioCell({
-  value,
-  label = "未公开",
-}: {
-  value: number | null;
-  label?: string;
-}) {
-  return (
-    <td className="px-4 py-3">
-      {value === null ? (
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-500">
-          {label}
-        </span>
-      ) : (
-        `${value}:1`
-      )}
-    </td>
-  );
+function KpiCard({ icon: Icon, label, value, suffix, note }: { icon: LucideIcon; label: string; value: string; suffix: string; note: string }) {
+  return <article className="kpi-card"><div className="kpi-icon"><Icon size={20} /></div><div className="kpi-copy"><span>{label}</span><strong>{value}<small>{suffix}</small></strong><em>{note}</em></div></article>;
 }
 
-function HistoryPanel({
-  unit,
-  onClose,
-}: {
-  unit: AdmissionUnit;
-  onClose: () => void;
-}) {
-  return (
-    <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50/50 p-5">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-xl font-black">{unit.name} · 近年招生数据</h3>
-          <p className="mt-1 text-sm text-slate-500">
-            “尚未采集”表示网站还没有解析该校公告；“未公开”表示已核查但学校未公布。
-          </p>
-        </div>
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm font-bold"
-        >
-          关闭
-        </button>
-      </div>
-      <div className="mt-4 overflow-x-auto rounded-xl border border-blue-100 bg-white">
-        <table className="w-full min-w-[760px] text-sm">
-          <thead className="bg-blue-50 text-left text-xs font-black text-blue-900">
-            <tr>
-              {[
-                "年份",
-                "复试线",
-                "招生人数",
-                "复录比",
-                "发布日期",
-                "数据来源",
-              ].map((head) => (
-                <th key={head} className="px-4 py-3">
-                  {head}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {unit.history.map((item) => (
-              <tr key={item.year} className="border-t border-blue-50">
-                <td className="px-4 py-3 font-black">
-                  {item.year}
-                  {item.year === 2026 && (
-                    <span className="ml-2 rounded-full bg-blue-600 px-2 py-1 text-xs text-white">
-                      今年
-                    </span>
-                  )}
-                </td>
-                <HistoryValue value={item.retestLine} label={item.note} />
-                <HistoryValue value={item.enrollment} label={item.note} />
-                <td className="px-4 py-3">
-                  {item.retestAdmissionRatio === null
-                    ? item.note
-                    : `${item.retestAdmissionRatio}:1`}
-                </td>
-                <td className="px-4 py-3">{item.publishedAt ?? item.note}</td>
-                <td className="px-4 py-3">
-                  {item.sourceUrl ? (
-                    <a
-                      href={item.sourceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-bold text-blue-700"
-                    >
-                      查看官方公告
-                    </a>
-                  ) : (
-                    item.note
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+function SummaryStat({ label, value }: { label: string; value: number | string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function HistoryValue({
-  value,
-  label,
-}: {
-  value: number | null;
-  label: string;
-}) {
-  return <td className="px-4 py-3">{value ?? label}</td>;
+function SchoolRow({ unit, onHistory }: { unit: AdmissionUnit; onHistory: () => void }) {
+  const current = unit.history.find((item) => item.year === 2026);
+  return <div className="school-row" role="row"><div className="school-name-cell"><SchoolBadge name={unit.name} /><div><strong>{unit.name}</strong><div className="tag-list"><Tag visible={unit.graduateSchool}>研究生院</Tag><Tag visible={unit.selfMarking}>自划线</Tag><Tag visible={unit.doubleFirstClass}>双一流</Tag></div></div></div><div className="school-meta-cell"><strong>{unit.region}</strong><span>{unit.department}</span></div><Metric value={current?.enrollment ?? null} /><Metric value={current?.retestLine ?? null} /><Metric value={current?.retestAdmissionRatio === null || current?.retestAdmissionRatio === undefined ? null : `${current.retestAdmissionRatio}:1`} /><button type="button" className="school-action" onClick={onHistory} aria-label={`查看${unit.name}近年数据`}><BarChart3 size={12} /> 近年</button></div>;
+}
+
+function SchoolBadge({ name }: { name: string }) {
+  const [failed, setFailed] = useState(false);
+  const code = SCHOOL_LOGO_CODES[name];
+  return <span className="school-badge" aria-label={`${name}校徽`}>{code && !failed ? <img src={`https://t1.chei.com.cn/common/xh/${code}.jpg`} alt={`${name}校徽`} onError={() => setFailed(true)} /> : <><span>{name.slice(0, 2)}</span><GraduationCap size={13} /></>}</span>;
+}
+
+const SCHOOL_LOGO_CODES: Record<string, string> = {
+  "北京大学": "10001", "中国人民大学": "10002", "清华大学": "10003", "北京航空航天大学": "10006", "北京理工大学": "10007", "中国农业大学": "10019",
+  "哈尔滨工业大学": "10213", "吉林大学": "10183", "复旦大学": "10246", "上海交通大学": "10248", "南京大学": "10284", "苏州大学": "10285", "东南大学": "10286", "南京航空航天大学": "10287", "南京理工大学": "10288", "中国矿业大学": "10290", "河海大学": "10294", "浙江大学": "10335", "山东大学": "10422", "武汉大学": "10486", "华中科技大学": "10487", "中山大学": "10558", "华南理工大学": "10561", "四川大学": "10610", "电子科技大学": "10614", "西安交通大学": "10698",
+};
+
+function Tag({ children, visible }: { children: ReactNode; visible: boolean }) {
+  if (!visible) return null;
+  return <span>{children}</span>;
+}
+
+function Metric({ value }: { value: number | string | null }) {
+  return <span className={`table-metric${value === null ? " is-missing" : ""}`}>{value ?? "未公开"}</span>;
+}
+
+function PanelTitle({ icon: Icon, title, action }: { icon: LucideIcon; title: string; action: string }) {
+  return <div className="panel-title"><div><Icon size={16} /><h3>{title}</h3></div><span>{action}<ChevronRight size={14} /></span></div>;
+}
+
+function CoverageRow({ label, value, progress, color }: { label: string; value: string; progress: number; color: "cyan" | "amber" | "violet" }) {
+  return <div className="coverage-row"><div><span>{label}</span><strong>{value}</strong></div><div className="coverage-track"><i className={`is-${color}`} style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} /></div></div>;
+}
+
+function HistoryOverlay({ unit, onClose }: { unit: AdmissionUnit; onClose: () => void }) {
+  return <div className="history-overlay" role="dialog" aria-modal="true" aria-label={`${unit.name}近年数据`}><div className="history-overlay__card"><div className="history-overlay__head"><div><span className="eyebrow"><span className="status-dot" /> 近年数据</span><h3>{unit.name} · 2023–2026</h3></div><button type="button" className="drawer-close" onClick={onClose} aria-label="关闭近年数据"><X size={16} /></button></div><div className="history-grid"><div className="history-grid__head"><span>年份</span><span>招生人数</span><span>复试线</span><span>复录比</span><span>数据来源</span></div>{unit.history.map((item) => <div className="history-grid__row" key={item.year}><strong>{item.year}</strong><Metric value={item.enrollment} /><Metric value={item.retestLine} /><Metric value={item.retestAdmissionRatio === null ? null : `${item.retestAdmissionRatio}:1`} />{item.sourceUrl ? <a href={item.sourceUrl} target="_blank" rel="noreferrer">官方公告 <ExternalLink size={11} /></a> : <span className="table-metric is-missing">{item.note}</span>}</div>)}</div></div></div>;
+}
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "--" : date.toLocaleString("zh-CN", { hour12: false });
 }

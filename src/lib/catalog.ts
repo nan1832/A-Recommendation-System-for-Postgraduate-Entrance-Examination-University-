@@ -1,5 +1,6 @@
 import { getAdmissionSnapshot } from "./sync";
 import type { AdmissionUnit } from "./types";
+import bundled408Offerings from "../../data/408-offerings.json";
 
 export async function queryAdmissionUnits(input: { keyword?: string; region?: string; attribute?: string; page?: number; pageSize?: number }) {
   const snapshot = await getAdmissionSnapshot();
@@ -17,6 +18,8 @@ export async function queryAdmissionUnits(input: { keyword?: string; region?: st
     items: filtered.slice(start, start + pageSize), total: filtered.length, page, pageSize,
     totalPages: Math.max(1, Math.ceil(filtered.length / pageSize)), syncedAt: snapshot.syncedAt,
     source: snapshot.source, sourceUrl: snapshot.sourceUrl, catalogCount: snapshot.count, regions, regionDistribution,
+    offerings408Count: bundled408Offerings.count,
+    offerings408SchoolCount: bundled408Offerings.schoolCount,
     stats: {
       graduateSchool: snapshot.units.filter((unit) => unit.graduateSchool).length,
       selfMarking: snapshot.units.filter((unit) => unit.selfMarking).length,
